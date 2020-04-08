@@ -115,7 +115,7 @@ void preProcess(uchar4** h_inputImageRGBA, uchar4** h_outputImageRGBA,
 	checkCudaErrors(cudaMalloc(d_redFiltered, sizeof(unsigned char) * numPixels));
 	checkCudaErrors(cudaMalloc(d_greenFiltered, sizeof(unsigned char) * numPixels));
 	checkCudaErrors(cudaMalloc(d_blueFiltered, sizeof(unsigned char) * numPixels));
-	checkCudaErrors(cudaMemset(*d_redFiltered, 225, sizeof(unsigned char) * numPixels));
+	checkCudaErrors(cudaMemset(*d_redFiltered, 0, sizeof(unsigned char) * numPixels));
 	checkCudaErrors(cudaMemset(*d_greenFiltered, 0, sizeof(unsigned char) * numPixels));
 	checkCudaErrors(cudaMemset(*d_blueFiltered, 0, sizeof(unsigned char) * numPixels));
 }
