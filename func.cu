@@ -15,6 +15,7 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <cuda_runtime_api.h>
+#include <cuda_profiler_api.h>
 #include <iomanip>
 #include <iostream>
 
@@ -23,8 +24,8 @@
 
 const int kernelWidth = 5;  // OJO CON EL TAMAÑO DEL FILTRO//
 __constant__ float d_filter[kernelWidth * kernelWidth];
-__constant__ int d_kernelWidth = kernelWidth;
-__constant__ int d_halfKernelWidth = (kernelWidth - 1) / 2;
+__constant__ int const d_kernelWidth = kernelWidth;
+__constant__ int const d_halfKernelWidth = (kernelWidth - 1) / 2;
 __constant__ int d_size[2];
 
 #define checkCudaErrors(val) check((val), #val, __FILE__, __LINE__)
@@ -63,6 +64,83 @@ __global__ void box_filter(const unsigned char* const inputChannel,
 	// make sure we don't try and access memory outside the image
 	// by having any threads mapped there return early
 	if (thread_2D_pos.x >= numCols || thread_2D_pos.y >= numRows) return;
+
+	//__shared__ unsigned char ds_inputChannel[BLOCK_HEIGHT + d_halfKernelWidth][BLOCK_WIDTH + d_halfKernelWidth];
+	/*
+	unsigned int tx = threadIdx.x + d_halfKernelWidth;
+	unsigned int ty = threadIdx.y + d_halfKernelWidth;
+
+	ds_inputChannel[ty][tx] = inputChannel[(thread_2D_pos.y) * numCols + (thread_2D_pos.x)];
+
+	//Borde derecho
+	if (threadIdx.y == BLOCK_WIDTH - 1)
+	{
+		for (int i = 1; i <= d_halfKernelWidth; ++i)
+			if(thread_2D_pos.x + i < numCols)
+				ds_inputChannel[ty][tx + i] = inputChannel[(thread_2D_pos.y) * numCols + (thread_2D_pos.x + i)];
+	}
+
+	//Borde izquierdo
+	if (threadIdx.y == 0)
+	{
+		for (int i = 1; i <= d_halfKernelWidth; ++i)
+			if (thread_2D_pos.x - i >= 0)
+				ds_inputChannel[ty][tx - i] = inputChannel[(thread_2D_pos.y) * numCols + (thread_2D_pos.x - i)];
+	}
+
+	//Borde inferior
+	if (threadIdx.x == BLOCK_HEIGHT - 1)
+	{
+		for (int i = 1; i <= d_halfKernelWidth; ++i)
+			if (thread_2D_pos.y + i < numRows)
+				ds_inputChannel[threadIdx.y + i][threadIdx.x] = inputChannel[(thread_2D_pos.y + i) * numCols + (thread_2D_pos.x)];
+	}
+
+	//Borde superior
+	if (threadIdx.x == 0)
+	{
+		for (int i = 1; i <= d_halfKernelWidth; ++i)
+			if (thread_2D_pos.y - i >= 0)
+				ds_inputChannel[threadIdx.y - i][threadIdx.x] = inputChannel[(thread_2D_pos.y - i) * numCols + (thread_2D_pos.x)];
+	}
+
+	//Esquina inferior der
+	if (threadIdx.y == BLOCK_WIDTH - 1 && threadIdx.x == BLOCK_HEIGHT - 1)
+	{
+		for (int i = 1; i <= d_halfKernelWidth; ++i)
+			for (int j = 1; j <= d_halfKernelWidth; ++j)
+				if (thread_2D_pos.y + i < numRows && thread_2D_pos.x + j < numCols)
+					ds_inputChannel[threadIdx.y + i][threadIdx.x + j] = inputChannel[(thread_2D_pos.y + i) * numCols + (thread_2D_pos.x + j)];
+	}
+
+	//Esquina inferior izq
+	if (threadIdx.y == 0 && threadIdx.x == BLOCK_HEIGHT - 1)
+	{
+		for (int i = 1; i <= d_halfKernelWidth; ++i)
+			for (int j = 1; j <= d_halfKernelWidth; ++j)
+				if (thread_2D_pos.y + i < numRows && thread_2D_pos.x - j >= 0)
+					ds_inputChannel[threadIdx.y + i][threadIdx.x - j] = inputChannel[(thread_2D_pos.y + i) * numCols + (thread_2D_pos.x - j)];
+	}
+
+	//Esquina superior der
+	if (threadIdx.y == BLOCK_WIDTH - 1 && threadIdx.x == 0)
+	{
+		for (int i = 1; i <= d_halfKernelWidth; ++i)
+			for (int j = 1; j <= d_halfKernelWidth; ++j)
+				if (thread_2D_pos.y - i >= 0 && thread_2D_pos.x + j < numCols)
+					ds_inputChannel[threadIdx.y - i][threadIdx.x + j] = inputChannel[(thread_2D_pos.y - i) * numCols + (thread_2D_pos.x + j)];
+	}
+
+	//Esquina superior izq
+	if (threadIdx.y == 0 && threadIdx.x == 0)
+	{
+		for (int i = 1; i <= d_halfKernelWidth; ++i)
+			for (int j = 1; j <= d_halfKernelWidth; ++j)
+				if (thread_2D_pos.y - i >= 0 && thread_2D_pos.x - j >= 0)
+					ds_inputChannel[threadIdx.y - i][threadIdx.x - j] = inputChannel[(thread_2D_pos.y - i) * numCols + (thread_2D_pos.x - j)];
+	}
+	*/
+	__syncthreads();
 
 	//Sin constantes es necesario llamar a esto
 	//int d_halfKernelWidth = (d_kernelWidth - 1) / 2;
