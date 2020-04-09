@@ -21,13 +21,18 @@
 #define BLOCK_WIDTH 64
 #define BLOCK_HEIGHT 16
 
-//__constant__ float d_filter[KernelWidth * KernelWidth];
+const int kernelWidth = 5;  // OJO CON EL TAMAÑO DEL FILTRO//
+__constant__ float d_filter[kernelWidth * kernelWidth];
+__constant__ int d_kernelWidth = kernelWidth;
+__constant__ int d_halfKernelWidth = (kernelWidth - 1) / 2;
+__constant__ int d_size[2];
 
 #define checkCudaErrors(val) check((val), #val, __FILE__, __LINE__)
 void makeLaplacianFilter(float** h_filter);
 void makeHorizontalLineFilter(float** h_filter);
 void makeSharpnessFilter(float** h_filter, int type);
 void makeBlurFilter(float** h_filter, int type);
+void makeBlur3(float** h_filter);
 
 template <typename T>
 void check(T err, const char* const func, const char* const file,
@@ -46,12 +51,11 @@ __device__ float clamp(float x, float a, float b)
 }
 
 __global__ void box_filter(const unsigned char* const inputChannel,
-	unsigned char* const outputChannel, int numRows,
-	int numCols, const float* const filter,
-	const int filterWidth) {
-	// TODO:
-	// NOTA: Cuidado al acceder a memoria que esta fuera de los limites de la
-	// imagen
+	unsigned char* const outputChannel)
+{
+	int numRows = d_size[0];
+	int numCols = d_size[1];
+
 	const int2 thread_2D_pos = make_int2(blockIdx.x * blockDim.x + threadIdx.x, blockIdx.y * blockDim.y + threadIdx.y);
 
 	const int thread_1D_pos = thread_2D_pos.y * numCols + thread_2D_pos.x;
@@ -60,16 +64,18 @@ __global__ void box_filter(const unsigned char* const inputChannel,
 	// by having any threads mapped there return early
 	if (thread_2D_pos.x >= numCols || thread_2D_pos.y >= numRows) return;
 
-	int kernelWidth = (filterWidth - 1) / 2;
-	unsigned char convolutionSum = 0;
-	for (int i = -kernelWidth; i <= kernelWidth; ++i)
+	//Sin constantes es necesario llamar a esto
+	//int d_halfKernelWidth = (d_kernelWidth - 1) / 2;
+	int convolutionSum = 0;
+
+	for (int i = -d_halfKernelWidth; i <= d_halfKernelWidth; ++i)
 	{
-		for (int j = -kernelWidth; j <= kernelWidth; ++j)
+		for (int j = -d_halfKernelWidth; j <= d_halfKernelWidth; ++j)
 		{
-			if ((thread_2D_pos.x + i) >= numCols || (thread_2D_pos.x + i) < 0 || (thread_2D_pos.y + j) >= numRows || (thread_2D_pos.y + j) < 0)
+			if ((thread_2D_pos.x + j) >= numCols || (thread_2D_pos.x + j) < 0 || (thread_2D_pos.y + i) >= numRows || (thread_2D_pos.y + i) < 0)
 				convolutionSum += 0;
 			else
-				convolutionSum += inputChannel[(thread_2D_pos.y + j) * numCols + (thread_2D_pos.x + i)] * filter[(i + kernelWidth) * filterWidth + (j + kernelWidth)];
+				convolutionSum += (int)inputChannel[(thread_2D_pos.y + i) * numCols + (thread_2D_pos.x + j)] * d_filter[(i + d_halfKernelWidth) * d_kernelWidth + (j + d_halfKernelWidth)];
 		}
 	}
 
@@ -85,13 +91,16 @@ __global__ void box_filter(const unsigned char* const inputChannel,
 // This kernel takes in an image represented as a uchar4 and splits
 // it into three images consisting of only one color channel each
 __global__ void separateChannels(const uchar4* const inputImageRGBA,
-	int numRows, int numCols,
 	unsigned char* const redChannel,
 	unsigned char* const greenChannel,
 	unsigned char* const blueChannel) {
 	// TODO:
 	// NOTA: Cuidado al acceder a memoria que esta fuera de los limites de la
 	// imagen
+
+	int numRows = d_size[0];
+	int numCols = d_size[1];
+
 	const int2 thread_2D_pos = make_int2(blockIdx.x * blockDim.x + threadIdx.x, blockIdx.y * blockDim.y + threadIdx.y);
 
 	const int thread_1D_pos = thread_2D_pos.y * numCols + thread_2D_pos.x;
@@ -111,8 +120,10 @@ __global__ void separateChannels(const uchar4* const inputImageRGBA,
 __global__ void recombineChannels(const unsigned char* const redChannel,
 	const unsigned char* const greenChannel,
 	const unsigned char* const blueChannel,
-	uchar4* const outputImageRGBA, int numRows,
-	int numCols) {
+	uchar4* const outputImageRGBA) {
+	int numRows = d_size[0];
+	int numCols = d_size[1];
+
 	const int2 thread_2D_pos = make_int2(blockIdx.x * blockDim.x + threadIdx.x, blockIdx.y * blockDim.y + threadIdx.y);
 
 	const int thread_1D_pos = thread_2D_pos.y * numCols + thread_2D_pos.x;
@@ -132,7 +143,7 @@ __global__ void recombineChannels(const unsigned char* const redChannel,
 }
 
 unsigned char* d_red, * d_green, * d_blue;
-float* d_filter;
+//float* d_filter;
 
 void allocateMemoryAndCopyToGPU(const size_t numRowsImage,
 	const size_t numColsImage,
@@ -147,54 +158,29 @@ void allocateMemoryAndCopyToGPU(const size_t numRowsImage,
 	// Reservar memoria para el filtro en GPU: d_filter, la cual ya esta declarada
 	// Copiar el filtro  (h_filter) a memoria global de la GPU (d_filter)
 
-	checkCudaErrors(cudaMalloc(&d_filter, sizeof(float) * filterWidth * filterWidth));
-	checkCudaErrors(cudaMemcpy(d_filter, h_filter, sizeof(float) * filterWidth * filterWidth, cudaMemcpyHostToDevice));
+	//Con memoria de constantes
+	int h_size[2] = { numRowsImage,numColsImage };
 
-	//cudaMemcpyToSymbol(d_filter, &h_filter, sizeof(float) * filterWidth * filterWidth);
+	checkCudaErrors(cudaMemcpyToSymbol(d_size, h_size, sizeof(int) * 2, 0, cudaMemcpyHostToDevice));
+	checkCudaErrors(cudaMemcpyToSymbol(d_filter, h_filter, sizeof(float) * kernelWidth * kernelWidth, 0, cudaMemcpyHostToDevice));
 }
-
-const int KernelWidth = 3;  // OJO CON EL TAMAÑO DEL FILTRO//
 
 void create_filter(float** h_filter, int* filterWidth) {
 	// create and fill the filter we will convolve with
-	*h_filter = new float[KernelWidth * KernelWidth];
+	*h_filter = new float[kernelWidth * kernelWidth];
 
 	//5*5
-	//makeLaplacianFilter(h_filter);
+	makeLaplacianFilter(h_filter);
 
 	//3*3
-	makeSharpnessFilter(h_filter, 0);
-	//makeHorizontalLineFilter( h_filter);
-	//Filtro gaussiano: blur
-	/*
-	const float KernelSigma = 2.;
-
-	float filterSum = 0.f; //for normalization
-
-	for (int r = -KernelWidth / 2; r <= KernelWidth / 2; ++r)
-	{
-		for (int c = -KernelWidth / 2; c <= KernelWidth / 2; ++c)
-		{
-			float filterValue = expf(-(float)(c * c + r * r) / (2.f * KernelSigma * KernelSigma));
-			(*h_filter)[(r + KernelWidth / 2) * KernelWidth + c + KernelWidth / 2] = filterValue; filterSum += filterValue;
-		}
-	}
-
-	float normalizationFactor = 1.f / filterSum;
-
-	for (int r = -KernelWidth / 2; r <= KernelWidth / 2; ++r)
-	{
-		for (int c = -KernelWidth / 2; c <= KernelWidth / 2; ++c)
-		{
-			(*h_filter)[(r + KernelWidth / 2) * KernelWidth + c + KernelWidth / 2] *= normalizationFactor;
-		}
-	}
-	*/
+	//makeSharpnessFilter(h_filter, 2);
+	//makeHorizontalLineFilter(h_filter);
+	//makeBlur3(h_filter);
 
 	// TODO: crear los filtros segun necesidad
 	// NOTA: cuidado al establecer el tamaño del filtro a utilizar
 
-	* filterWidth = KernelWidth;
+	*filterWidth = kernelWidth;
 }
 
 void convolution(const uchar4* const h_inputImageRGBA,
@@ -208,15 +194,15 @@ void convolution(const uchar4* const h_inputImageRGBA,
 	const dim3 gridSize(ceil((float)numCols / BLOCK_WIDTH), ceil((float)numRows / BLOCK_HEIGHT), 1);
 
 	// TODO: Lanzar kernel para separar imagenes RGBA en diferentes colores
-	separateChannels << <gridSize, blockSize >> > (d_inputImageRGBA, numRows, numCols, d_red, d_green, d_blue);
+	separateChannels << <gridSize, blockSize >> > (d_inputImageRGBA, d_red, d_green, d_blue);
 
 	// TODO: Ejecutar convolución. Una por canal
-	box_filter << <gridSize, blockSize >> > (d_red, d_redFiltered, numRows, numCols, d_filter, filterWidth);
-	box_filter << <gridSize, blockSize >> > (d_green, d_greenFiltered, numRows, numCols, d_filter, filterWidth);
-	box_filter << <gridSize, blockSize >> > (d_blue, d_blueFiltered, numRows, numCols, d_filter, filterWidth);
+	box_filter << <gridSize, blockSize >> > (d_red, d_redFiltered);
+	box_filter << <gridSize, blockSize >> > (d_green, d_greenFiltered);
+	box_filter << <gridSize, blockSize >> > (d_blue, d_blueFiltered);
 
 	// Recombining the results.
-	recombineChannels << <gridSize, blockSize >> > (d_redFiltered, d_greenFiltered, d_blueFiltered, d_outputImageRGBA, numRows, numCols);
+	recombineChannels << <gridSize, blockSize >> > (d_redFiltered, d_greenFiltered, d_blueFiltered, d_outputImageRGBA);
 	cudaDeviceSynchronize();
 	checkCudaErrors(cudaGetLastError());
 }
@@ -227,6 +213,7 @@ void cleanup() {
 	checkCudaErrors(cudaFree(d_red));
 	checkCudaErrors(cudaFree(d_green));
 	checkCudaErrors(cudaFree(d_blue));
+	checkCudaErrors(cudaFree(d_filter));
 }
 
 void makeLaplacianFilter(float** h_filter)
@@ -343,5 +330,33 @@ void makeBlurFilter(float** h_filter, int type)
 		(*h_filter)[7] = 2;
 		(*h_filter)[8] = 1;
 		break;
+	}
+}
+
+void makeBlur3(float** h_filter)
+{
+	//Filtro gaussiano: blur
+
+	const float KernelSigma = 2.;
+
+	float filterSum = 0.f; //for normalization
+
+	for (int r = -kernelWidth / 2; r <= kernelWidth / 2; ++r)
+	{
+		for (int c = -kernelWidth / 2; c <= kernelWidth / 2; ++c)
+		{
+			float filterValue = expf(-(float)(c * c + r * r) / (2.f * KernelSigma * KernelSigma));
+			(*h_filter)[(r + kernelWidth / 2) * kernelWidth + c + kernelWidth / 2] = filterValue; filterSum += filterValue;
+		}
+	}
+
+	float normalizationFactor = 1.f / filterSum;
+
+	for (int r = -kernelWidth / 2; r <= kernelWidth / 2; ++r)
+	{
+		for (int c = -kernelWidth / 2; c <= kernelWidth / 2; ++c)
+		{
+			(*h_filter)[(r + kernelWidth / 2) * kernelWidth + c + kernelWidth / 2] *= normalizationFactor;
+		}
 	}
 }
