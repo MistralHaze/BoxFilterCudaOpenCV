@@ -22,7 +22,7 @@
 #define BLOCK_WIDTH 64
 #define BLOCK_HEIGHT 16
 
-const int kernelWidth = 5;  // OJO CON EL TAMAÑO DEL FILTRO//
+const int kernelWidth = 9;  // OJO CON EL TAMAÑO DEL FILTRO//
 __constant__ float d_filter[kernelWidth * kernelWidth];
 __constant__ int const d_kernelWidth = kernelWidth;
 __constant__ int const d_halfKernelWidth = (kernelWidth - 1) / 2;
@@ -51,6 +51,120 @@ __device__ float clamp(float x, float a, float b)
 	return fmax(a, fmin(b, x));
 }
 
+__global__ void box_filter_shared_mem(const unsigned char* const inputChannel,
+	unsigned char* const outputChannel)
+{
+	int numRows = d_size[0];
+	int numCols = d_size[1];
+
+	const int2 thread_2D_pos = make_int2(blockIdx.x * blockDim.x + threadIdx.x, blockIdx.y * blockDim.y + threadIdx.y);
+
+	const int thread_1D_pos = thread_2D_pos.y * numCols + thread_2D_pos.x;
+
+	// make sure we don't try and access memory outside the image
+	// by having any threads mapped there return early
+	if (thread_2D_pos.x >= numCols || thread_2D_pos.y >= numRows) return;
+
+	__shared__ unsigned char ds_inputChannel[BLOCK_HEIGHT + d_kernelWidth][BLOCK_WIDTH + d_kernelWidth];
+
+	unsigned int tx = threadIdx.x + d_halfKernelWidth;
+	unsigned int ty = threadIdx.y + d_halfKernelWidth;
+
+	ds_inputChannel[ty][tx] = inputChannel[thread_1D_pos];
+
+	//Borde inferior
+	if (threadIdx.y == BLOCK_HEIGHT - 1)
+	{
+		for (int i = 1; i <= d_halfKernelWidth; ++i)
+			if (thread_2D_pos.y + i < numRows)
+				ds_inputChannel[ty + i][tx] = inputChannel[(thread_2D_pos.y + i) * numCols + (thread_2D_pos.x)];
+	}
+
+	//Borde superior
+	if (threadIdx.y == 0)
+	{
+		for (int i = 1; i <= d_halfKernelWidth; ++i)
+			if (thread_2D_pos.y - i >= 0)
+				ds_inputChannel[ty - i][tx] = inputChannel[(thread_2D_pos.y - i) * numCols + (thread_2D_pos.x)];
+	}
+
+	//Borde derecho
+	if (threadIdx.x == BLOCK_WIDTH - 1)
+	{
+		for (int i = 1; i <= d_halfKernelWidth; ++i)
+			if (thread_2D_pos.x + i < numCols)
+				ds_inputChannel[ty][tx + i] = inputChannel[(thread_2D_pos.y) * numCols + (thread_2D_pos.x + i)];
+	}
+
+	//Borde izquierdo
+	if (threadIdx.x == 0)
+	{
+		for (int i = 1; i <= d_halfKernelWidth; ++i)
+			if (thread_2D_pos.x - i >= 0)
+				ds_inputChannel[ty][tx - i] = inputChannel[(thread_2D_pos.y) * numCols + (thread_2D_pos.x - i)];
+	}
+
+	//Esquina inferior der
+	if (threadIdx.y == BLOCK_HEIGHT - 1 && threadIdx.x == BLOCK_WIDTH - 1)
+	{
+		for (int i = 1; i <= d_halfKernelWidth; ++i)
+			for (int j = 1; j <= d_halfKernelWidth; ++j)
+				if (thread_2D_pos.y + i < numRows && thread_2D_pos.x + j < numCols)
+					ds_inputChannel[ty + i][tx + j] = inputChannel[(thread_2D_pos.y + i) * numCols + (thread_2D_pos.x + j)];
+	}
+
+	//Esquina superior der
+	if (threadIdx.y == 0 && threadIdx.x == BLOCK_WIDTH - 1)
+	{
+		for (int i = 1; i <= d_halfKernelWidth; ++i)
+			for (int j = 1; j <= d_halfKernelWidth; ++j)
+				if (thread_2D_pos.y - i >= 0 && thread_2D_pos.x + j < numCols)
+					ds_inputChannel[ty - i][tx + j] = inputChannel[(thread_2D_pos.y - i) * numCols + (thread_2D_pos.x + j)];
+	}
+
+	//Esquina inferior izq
+	if (threadIdx.y == BLOCK_HEIGHT - 1 && threadIdx.x == 0)
+	{
+		for (int i = 1; i <= d_halfKernelWidth; ++i)
+			for (int j = 1; j <= d_halfKernelWidth; ++j)
+				if (thread_2D_pos.y + i < numRows && thread_2D_pos.x - j >= 0)
+					ds_inputChannel[ty + i][tx - j] = inputChannel[(thread_2D_pos.y + i) * numCols + (thread_2D_pos.x - j)];
+	}
+
+	//Esquina superior izq
+	if (threadIdx.y == 0 && threadIdx.x == 0)
+	{
+		for (int i = 1; i <= d_halfKernelWidth; ++i)
+			for (int j = 1; j <= d_halfKernelWidth; ++j)
+				if (thread_2D_pos.y - i >= 0 && thread_2D_pos.x - j >= 0)
+					ds_inputChannel[ty - i][tx - j] = inputChannel[(thread_2D_pos.y - i) * numCols + (thread_2D_pos.x - j)];
+	}
+
+	__syncthreads();
+
+	//Sin constantes es necesario llamar a esto
+
+	float convolutionSum = 0;
+	for (int i = -d_halfKernelWidth; i <= d_halfKernelWidth; ++i)
+	{
+		for (int j = -d_halfKernelWidth; j <= d_halfKernelWidth; ++j)
+		{
+			if ((thread_2D_pos.x + j) >= numCols || (thread_2D_pos.x + j) < 0 || (thread_2D_pos.y + i) >= numRows || (thread_2D_pos.y + i) < 0)
+				convolutionSum += 0;
+			else
+				convolutionSum += (float)ds_inputChannel[ty + i][tx + j] * d_filter[(i + d_halfKernelWidth) * d_kernelWidth + (j + d_halfKernelWidth)];
+		}
+	}
+
+	convolutionSum = clamp(convolutionSum, 0, 255);
+
+	outputChannel[thread_1D_pos] = convolutionSum;
+
+	// NOTA: Que un thread tenga una posición correcta en 2D no quiere decir que
+	// al aplicar el filtro los valores de sus vecinos sean correctos, ya que
+	// pueden salirse de la imagen.
+}
+
 __global__ void box_filter(const unsigned char* const inputChannel,
 	unsigned char* const outputChannel)
 {
@@ -65,87 +179,9 @@ __global__ void box_filter(const unsigned char* const inputChannel,
 	// by having any threads mapped there return early
 	if (thread_2D_pos.x >= numCols || thread_2D_pos.y >= numRows) return;
 
-	//__shared__ unsigned char ds_inputChannel[BLOCK_HEIGHT + d_halfKernelWidth][BLOCK_WIDTH + d_halfKernelWidth];
-	/*
-	unsigned int tx = threadIdx.x + d_halfKernelWidth;
-	unsigned int ty = threadIdx.y + d_halfKernelWidth;
-
-	ds_inputChannel[ty][tx] = inputChannel[(thread_2D_pos.y) * numCols + (thread_2D_pos.x)];
-
-	//Borde derecho
-	if (threadIdx.y == BLOCK_WIDTH - 1)
-	{
-		for (int i = 1; i <= d_halfKernelWidth; ++i)
-			if(thread_2D_pos.x + i < numCols)
-				ds_inputChannel[ty][tx + i] = inputChannel[(thread_2D_pos.y) * numCols + (thread_2D_pos.x + i)];
-	}
-
-	//Borde izquierdo
-	if (threadIdx.y == 0)
-	{
-		for (int i = 1; i <= d_halfKernelWidth; ++i)
-			if (thread_2D_pos.x - i >= 0)
-				ds_inputChannel[ty][tx - i] = inputChannel[(thread_2D_pos.y) * numCols + (thread_2D_pos.x - i)];
-	}
-
-	//Borde inferior
-	if (threadIdx.x == BLOCK_HEIGHT - 1)
-	{
-		for (int i = 1; i <= d_halfKernelWidth; ++i)
-			if (thread_2D_pos.y + i < numRows)
-				ds_inputChannel[threadIdx.y + i][threadIdx.x] = inputChannel[(thread_2D_pos.y + i) * numCols + (thread_2D_pos.x)];
-	}
-
-	//Borde superior
-	if (threadIdx.x == 0)
-	{
-		for (int i = 1; i <= d_halfKernelWidth; ++i)
-			if (thread_2D_pos.y - i >= 0)
-				ds_inputChannel[threadIdx.y - i][threadIdx.x] = inputChannel[(thread_2D_pos.y - i) * numCols + (thread_2D_pos.x)];
-	}
-
-	//Esquina inferior der
-	if (threadIdx.y == BLOCK_WIDTH - 1 && threadIdx.x == BLOCK_HEIGHT - 1)
-	{
-		for (int i = 1; i <= d_halfKernelWidth; ++i)
-			for (int j = 1; j <= d_halfKernelWidth; ++j)
-				if (thread_2D_pos.y + i < numRows && thread_2D_pos.x + j < numCols)
-					ds_inputChannel[threadIdx.y + i][threadIdx.x + j] = inputChannel[(thread_2D_pos.y + i) * numCols + (thread_2D_pos.x + j)];
-	}
-
-	//Esquina inferior izq
-	if (threadIdx.y == 0 && threadIdx.x == BLOCK_HEIGHT - 1)
-	{
-		for (int i = 1; i <= d_halfKernelWidth; ++i)
-			for (int j = 1; j <= d_halfKernelWidth; ++j)
-				if (thread_2D_pos.y + i < numRows && thread_2D_pos.x - j >= 0)
-					ds_inputChannel[threadIdx.y + i][threadIdx.x - j] = inputChannel[(thread_2D_pos.y + i) * numCols + (thread_2D_pos.x - j)];
-	}
-
-	//Esquina superior der
-	if (threadIdx.y == BLOCK_WIDTH - 1 && threadIdx.x == 0)
-	{
-		for (int i = 1; i <= d_halfKernelWidth; ++i)
-			for (int j = 1; j <= d_halfKernelWidth; ++j)
-				if (thread_2D_pos.y - i >= 0 && thread_2D_pos.x + j < numCols)
-					ds_inputChannel[threadIdx.y - i][threadIdx.x + j] = inputChannel[(thread_2D_pos.y - i) * numCols + (thread_2D_pos.x + j)];
-	}
-
-	//Esquina superior izq
-	if (threadIdx.y == 0 && threadIdx.x == 0)
-	{
-		for (int i = 1; i <= d_halfKernelWidth; ++i)
-			for (int j = 1; j <= d_halfKernelWidth; ++j)
-				if (thread_2D_pos.y - i >= 0 && thread_2D_pos.x - j >= 0)
-					ds_inputChannel[threadIdx.y - i][threadIdx.x - j] = inputChannel[(thread_2D_pos.y - i) * numCols + (thread_2D_pos.x - j)];
-	}
-	*/
-	__syncthreads();
-
 	//Sin constantes es necesario llamar a esto
-	//int d_halfKernelWidth = (d_kernelWidth - 1) / 2;
-	int convolutionSum = 0;
 
+	float convolutionSum = 0;
 	for (int i = -d_halfKernelWidth; i <= d_halfKernelWidth; ++i)
 	{
 		for (int j = -d_halfKernelWidth; j <= d_halfKernelWidth; ++j)
@@ -153,7 +189,7 @@ __global__ void box_filter(const unsigned char* const inputChannel,
 			if ((thread_2D_pos.x + j) >= numCols || (thread_2D_pos.x + j) < 0 || (thread_2D_pos.y + i) >= numRows || (thread_2D_pos.y + i) < 0)
 				convolutionSum += 0;
 			else
-				convolutionSum += (int)inputChannel[(thread_2D_pos.y + i) * numCols + (thread_2D_pos.x + j)] * d_filter[(i + d_halfKernelWidth) * d_kernelWidth + (j + d_halfKernelWidth)];
+				convolutionSum += (float)inputChannel[(thread_2D_pos.y + i) * numCols + (thread_2D_pos.x + j)] * d_filter[(i + d_halfKernelWidth) * d_kernelWidth + (j + d_halfKernelWidth)];
 		}
 	}
 
@@ -247,13 +283,15 @@ void create_filter(float** h_filter, int* filterWidth) {
 	// create and fill the filter we will convolve with
 	*h_filter = new float[kernelWidth * kernelWidth];
 
-	//5*5
-	makeLaplacianFilter(h_filter);
-
 	//3*3
 	//makeSharpnessFilter(h_filter, 2);
 	//makeHorizontalLineFilter(h_filter);
-	//makeBlur3(h_filter);
+
+	//5*5
+	//makeLaplacianFilter(h_filter);
+
+	//9*9
+	makeBlur3(h_filter);
 
 	// TODO: crear los filtros segun necesidad
 	// NOTA: cuidado al establecer el tamaño del filtro a utilizar
@@ -275,9 +313,9 @@ void convolution(const uchar4* const h_inputImageRGBA,
 	separateChannels << <gridSize, blockSize >> > (d_inputImageRGBA, d_red, d_green, d_blue);
 
 	// TODO: Ejecutar convolución. Una por canal
-	box_filter << <gridSize, blockSize >> > (d_red, d_redFiltered);
-	box_filter << <gridSize, blockSize >> > (d_green, d_greenFiltered);
-	box_filter << <gridSize, blockSize >> > (d_blue, d_blueFiltered);
+	box_filter_shared_mem << <gridSize, blockSize >> > (d_red, d_redFiltered);
+	box_filter_shared_mem << <gridSize, blockSize >> > (d_green, d_greenFiltered);
+	box_filter_shared_mem << <gridSize, blockSize >> > (d_blue, d_blueFiltered);
 
 	// Recombining the results.
 	recombineChannels << <gridSize, blockSize >> > (d_redFiltered, d_greenFiltered, d_blueFiltered, d_outputImageRGBA);
