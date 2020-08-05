@@ -94,7 +94,7 @@ __global__ void box_filter_shared_mem(const unsigned char* const inputChannel,
 				ds_inputChannel[ty][tx + i] = inputChannel[(thread_2D_pos.y) * numCols + (thread_2D_pos.x + i)];
 	}
 
-	//Borde izquierdo
+	//Borde izq
 	if (threadIdx.x == 0)
 	{
 		for (int i = 1; i <= d_halfKernelWidth; ++i)
